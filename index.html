@@ -188,7 +188,7 @@
       const btn=this; btn.textContent='카메라 켜는 중...';
       scanner=new Html5Qrcode('reader');
       scanner.start({facingMode:'environment'},
-        {fps:10, qrbox:qrboxFn, aspectRatio:1.0}, onScan, function(){})
+        {fps:10, qrbox:qrboxFn, experimentalFeatures:{useBarCodeDetectorIfSupported:true}}, onScan, function(){})
       .then(()=>{ btn.style.display='none';
         document.getElementById('result').innerHTML='<div class="r-msg">QR을 카메라에 비춰주세요</div>'; })
       .catch(e=>{ btn.textContent='▶ 스캔 시작 (다시 시도)';
