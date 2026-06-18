@@ -31,20 +31,24 @@
     #startBtn:active { background:#197f31; }
     #reader { border-radius:14px; overflow:hidden; background:#000; }
     #reader video { width:100% !important; height:auto !important; display:block; }
-    #result { margin-top:12px; border-radius:14px; padding:18px; text-align:center;
-      min-height:90px; display:flex; flex-direction:column; justify-content:center;
-      transition:background .15s; background:#1d2733; }
-    #result.ok { background:#15391f; border:2px solid #1f9d3c; }
-    #result.duplicate { background:#3d3410; border:2px solid #c9a227; }
-    #result.unknown, #result.error { background:#401717; border:2px solid #d63b3b; }
-    .r-icon { font-size:34px; }
-    .r-name { font-size:24px; font-weight:800; margin-top:4px; }
-    .r-type { font-size:15px; color:#8fd3a0; margin-top:2px; font-weight:700; }
-    .r-org { font-size:14px; color:#aab3bd; margin-top:2px; }
-    .r-msg { font-size:14px; margin-top:6px; }
     .hint { font-size:12px; color:#8b98a5; text-align:center; margin-top:10px; }
     .setup { background:#2a1a1a; border:1px solid #d63b3b; border-radius:10px;
       padding:12px; font-size:13px; margin-bottom:10px; display:none; }
+
+    /* 전체화면 결과 오버레이 */
+    #flash { position:fixed; inset:0; z-index:9999; display:none;
+      flex-direction:column; align-items:center; justify-content:center;
+      text-align:center; padding:24px; color:#fff; }
+    #flash.show { display:flex; }
+    #flash.ok { background:rgba(21,57,31,.97); }
+    #flash.duplicate { background:rgba(61,52,16,.97); }
+    #flash.unknown, #flash.error { background:rgba(64,23,23,.97); }
+    #flash.wait { background:rgba(15,20,25,.92); }
+    #flash .fi { font-size:96px; line-height:1; }
+    #flash .fn { font-size:46px; font-weight:800; margin-top:10px; }
+    #flash .ft { font-size:26px; font-weight:800; margin-top:8px; color:#8fd3a0; }
+    #flash .fo { font-size:18px; opacity:.85; margin-top:4px; }
+    #flash .fm { font-size:22px; margin-top:14px; }
   </style>
 </head>
 <body>
@@ -79,19 +83,20 @@
 
     <button id="startBtn">▶ 스캔 시작 (탭하면 카메라 켜짐)</button>
     <div id="reader"></div>
-    <div id="result"><div class="r-msg">유형을 고르고 스캔을 시작하세요</div></div>
-    <div class="hint">같은 사람·같은 유형은 3초 내 재스캔이 무시됩니다.</div>
+    <div class="hint">QR을 비추면 자동으로 인식됩니다. 같은 사람·같은 유형은 3초 내 재스캔 무시.</div>
   </div>
+
+  <!-- 전체화면 결과 표시 -->
+  <div id="flash"></div>
 
   <script>
     // ★★ Apps Script 웹앱 URL(끝이 /exec)을 여기에 붙여넣으세요 ★★
     const GAS_URL = 'https://script.google.com/macros/s/AKfycbzN5XIjZO5HbVeXe0gUunVEZGS6tKnjQl9BGH_HYxGhryxxBf1ciXNbftnbsO2RHgG2/exec';
 
-    let lastKey='', lastTime=0, busy=false, scanner=null;
+    let lastKey='', lastTime=0, busy=false, scanner=null, flashTimer=null;
 
     if (!GAS_URL) document.getElementById('setupWarn').style.display='block';
 
-    // ── 설정 불러오기 (폰에 저장된 값) ──
     let midCount = parseInt(localStorage.getItem('midCount') || '2', 10);
     let savedType = localStorage.getItem('checkType') || '입실';
     document.getElementById('booth').value = localStorage.getItem('booth') || '';
@@ -126,20 +131,37 @@
       localStorage.setItem('booth', this.value);
     });
 
-    function showResult(res, type){
-      const box=document.getElementById('result');
-      box.className=res.status;
-      let icon='✅';
-      if(res.status==='duplicate')icon='⚠️';
-      if(res.status==='unknown')icon='❌';
-      if(res.status==='error')icon='❗';
-      box.innerHTML='<div class="r-icon">'+icon+'</div>'+
-        (res.name?'<div class="r-name">'+res.name+'</div>':'')+
-        (type&&res.status!=='unknown'&&res.status!=='error'?'<div class="r-type">'+type+'</div>':'')+
-        (res.org?'<div class="r-org">'+res.org+'</div>':'')+
-        '<div class="r-msg">'+(res.message||'')+'</div>';
-      beep(res.status==='ok');
-      if(res.status==='ok') refreshStats();
+    // ── 전체화면 결과 표시 ──
+    function flash(status, opts){
+      opts = opts || {};
+      const f = document.getElementById('flash');
+      clearTimeout(flashTimer);
+      f.className = 'show ' + status;
+
+      if (status === 'wait') {
+        f.innerHTML = '<div class="fi">⏳</div><div class="fm">확인 중...</div>';
+        return; // 결과가 올 때까지 유지
+      }
+      let icon = '✅';
+      if (status === 'duplicate') icon = '⚠️';
+      if (status === 'unknown')   icon = '❌';
+      if (status === 'error')     icon = '❗';
+      f.innerHTML =
+        '<div class="fi">' + icon + '</div>' +
+        (opts.name ? '<div class="fn">' + opts.name + '</div>' : '') +
+        ((opts.type && status !== 'unknown' && status !== 'error') ? '<div class="ft">' + opts.type + '</div>' : '') +
+        (opts.org ? '<div class="fo">' + opts.org + '</div>' : '') +
+        '<div class="fm">' + (opts.message || '') + '</div>';
+      flashTimer = setTimeout(function(){ f.className = ''; }, 1400);
+    }
+
+    function vibrate(ok){
+      try {
+        if (navigator.vibrate) {
+          // 성공: 짧게 한 번 / 실패·중복: 길게 두 번
+          navigator.vibrate(ok ? 120 : [90, 80, 90]);
+        }
+      } catch(e) {}
     }
 
     function beep(ok){
@@ -152,19 +174,32 @@
     function onScan(text){
       const type = document.getElementById('checkType').value;
       const key = text + '|' + type;
-      const now=Date.now();
-      if(key===lastKey&&(now-lastTime)<3000)return;
-      if(busy)return;
-      lastKey=key;lastTime=now;busy=true;
-      const booth=document.getElementById('booth').value;
+      const now = Date.now();
+      if (key === lastKey && (now - lastTime) < 3000) return;
+      if (busy) return;
+      lastKey = key; lastTime = now; busy = true;
+
+      flash('wait');  // 읽은 즉시 "확인 중" 표시
+      const booth = document.getElementById('booth').value;
 
       fetch(GAS_URL, {
         method:'POST',
         body: JSON.stringify({ token:text, booth:booth, type:type })
       })
       .then(r=>r.json())
-      .then(res=>{ showResult(res, type); busy=false; })
-      .catch(err=>{ showResult({status:'error',message:'전송 실패: '+err.message}, type); busy=false; });
+      .then(res=>{
+        flash(res.status, { name:res.name, org:res.org, type:type, message:res.message });
+        beep(res.status==='ok');
+        vibrate(res.status==='ok');
+        if(res.status==='ok') refreshStats();
+        busy=false;
+      })
+      .catch(err=>{
+        flash('error', { message:'전송 실패: ' + err.message });
+        beep(false);
+        vibrate(false);
+        busy=false;
+      });
     }
 
     function refreshStats(){
@@ -178,7 +213,6 @@
         .catch(()=>{});
     }
 
-    // ── QR 박스: 항상 정사각형으로 계산 (직사각형 깨짐 방지) ──
     function qrboxFn(viewW, viewH){
       const size = Math.floor(Math.min(viewW, viewH) * 0.75);
       return { width: size, height: size };
@@ -188,11 +222,10 @@
       const btn=this; btn.textContent='카메라 켜는 중...';
       scanner=new Html5Qrcode('reader');
       scanner.start({facingMode:'environment'},
-        {fps:10, qrbox:qrboxFn, experimentalFeatures:{useBarCodeDetectorIfSupported:true}}, onScan, function(){})
-      .then(()=>{ btn.style.display='none';
-        document.getElementById('result').innerHTML='<div class="r-msg">QR을 카메라에 비춰주세요</div>'; })
+        {fps:12, qrbox:qrboxFn, experimentalFeatures:{useBarCodeDetectorIfSupported:true}}, onScan, function(){})
+      .then(()=>{ btn.style.display='none'; })
       .catch(e=>{ btn.textContent='▶ 스캔 시작 (다시 시도)';
-        document.getElementById('result').innerHTML='<div class="r-msg">카메라 권한을 허용한 뒤<br>버튼을 다시 눌러주세요</div>'; });
+        flash('error', { message:'카메라 권한을 허용한 뒤 다시 눌러주세요' }); });
     });
 
     buildTypes();
