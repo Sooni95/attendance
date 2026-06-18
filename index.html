@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>출석체크 스캐너</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      background:#0f1419; color:#e7e9ea; padding:12px; }
+    .wrap { max-width:480px; margin:0 auto; }
+    .title { font-size:17px; font-weight:700; margin-bottom:10px; }
+    .panel { background:#1d2733; border-radius:12px; padding:12px; margin-bottom:10px; }
+    .row { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+    .row:last-child { margin-bottom:0; }
+    .row label { font-size:14px; color:#aab3bd; }
+    select, input.booth {
+      background:#0f1419; border:1px solid #2f3b48; color:#e7e9ea;
+      border-radius:8px; padding:8px 10px; font-size:15px; min-width:130px; }
+    .stepper { display:flex; align-items:center; gap:10px; }
+    .stepper button { width:34px; height:34px; font-size:20px; font-weight:800;
+      background:#2f3b48; color:#fff; border:none; border-radius:8px; cursor:pointer; }
+    .stepper .val { font-size:17px; font-weight:800; min-width:24px; text-align:center; }
+    .stats { display:flex; gap:8px; margin-bottom:10px; }
+    .stat { flex:1; background:#1d2733; border-radius:10px; padding:10px; text-align:center; }
+    .stat .num { font-size:22px; font-weight:800; }
+    .stat .lbl { font-size:11px; color:#8b98a5; margin-top:2px; }
+    #startBtn { width:100%; padding:18px; font-size:18px; font-weight:800;
+      background:#1f9d3c; color:#fff; border:none; border-radius:14px; margin-bottom:12px; cursor:pointer; }
+    #startBtn:active { background:#197f31; }
+    #reader { border-radius:14px; overflow:hidden; background:#000; }
+    #reader video { width:100% !important; height:auto !important; display:block; }
+    #result { margin-top:12px; border-radius:14px; padding:18px; text-align:center;
+      min-height:90px; display:flex; flex-direction:column; justify-content:center;
+      transition:background .15s; background:#1d2733; }
+    #result.ok { background:#15391f; border:2px solid #1f9d3c; }
+    #result.duplicate { background:#3d3410; border:2px solid #c9a227; }
+    #result.unknown, #result.error { background:#401717; border:2px solid #d63b3b; }
+    .r-icon { font-size:34px; }
+    .r-name { font-size:24px; font-weight:800; margin-top:4px; }
+    .r-type { font-size:15px; color:#8fd3a0; margin-top:2px; font-weight:700; }
+    .r-org { font-size:14px; color:#aab3bd; margin-top:2px; }
+    .r-msg { font-size:14px; margin-top:6px; }
+    .hint { font-size:12px; color:#8b98a5; text-align:center; margin-top:10px; }
+    .setup { background:#2a1a1a; border:1px solid #d63b3b; border-radius:10px;
+      padding:12px; font-size:13px; margin-bottom:10px; display:none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">📷 출석체크 스캐너</div>
+
+    <div id="setupWarn" class="setup">⚠️ 코드 상단 <b>GAS_URL</b>을 먼저 설정하세요.</div>
+
+    <div class="panel">
+      <div class="row">
+        <label>체크 유형</label>
+        <select id="checkType"></select>
+      </div>
+      <div class="row">
+        <label>중간출석 횟수</label>
+        <div class="stepper">
+          <button id="minus">−</button>
+          <span class="val" id="midVal">2</span>
+          <button id="plus">+</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>부스명(선택)</label>
+        <input id="booth" class="booth" placeholder="예: 정문">
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="num" id="present">-</div><div class="lbl" id="presentLbl">출석</div></div>
+      <div class="stat"><div class="num" id="total">-</div><div class="lbl">전체</div></div>
+    </div>
+
+    <button id="startBtn">▶ 스캔 시작 (탭하면 카메라 켜짐)</button>
+    <div id="reader"></div>
+    <div id="result"><div class="r-msg">유형을 고르고 스캔을 시작하세요</div></div>
+    <div class="hint">같은 사람·같은 유형은 3초 내 재스캔이 무시됩니다.</div>
+  </div>
+
+  <script>
+    // ★★ Apps Script 웹앱 URL(끝이 /exec)을 여기에 붙여넣으세요 ★★
+    const GAS_URL = 'https://script.google.com/macros/s/AKfycbzN5XIjZO5HbVeXe0gUunVEZGS6tKnjQl9BGH_HYxGhryxxBf1ciXNbftnbsO2RHgG2/exec';
+
+    let lastKey='', lastTime=0, busy=false, scanner=null;
+
+    if (!GAS_URL) document.getElementById('setupWarn').style.display='block';
+
+    // ── 설정 불러오기 (폰에 저장된 값) ──
+    let midCount = parseInt(localStorage.getItem('midCount') || '2', 10);
+    let savedType = localStorage.getItem('checkType') || '입실';
+    document.getElementById('booth').value = localStorage.getItem('booth') || '';
+
+    function buildTypes() {
+      const sel = document.getElementById('checkType');
+      const types = ['입실'];
+      for (let i = 1; i <= midCount; i++) types.push('중간' + i);
+      types.push('퇴실');
+      sel.innerHTML = '';
+      types.forEach(t => {
+        const o = document.createElement('option');
+        o.value = t; o.textContent = t;
+        if (t === savedType) o.selected = true;
+        sel.appendChild(o);
+      });
+      if (!types.includes(savedType)) { savedType = '입실'; sel.value = '입실'; }
+      document.getElementById('midVal').textContent = midCount;
+      refreshStats();
+    }
+
+    document.getElementById('plus').addEventListener('click', function(){
+      if (midCount < 10) { midCount++; localStorage.setItem('midCount', midCount); buildTypes(); }
+    });
+    document.getElementById('minus').addEventListener('click', function(){
+      if (midCount > 0) { midCount--; localStorage.setItem('midCount', midCount); buildTypes(); }
+    });
+    document.getElementById('checkType').addEventListener('change', function(){
+      savedType = this.value; localStorage.setItem('checkType', savedType); refreshStats();
+    });
+    document.getElementById('booth').addEventListener('change', function(){
+      localStorage.setItem('booth', this.value);
+    });
+
+    function showResult(res, type){
+      const box=document.getElementById('result');
+      box.className=res.status;
+      let icon='✅';
+      if(res.status==='duplicate')icon='⚠️';
+      if(res.status==='unknown')icon='❌';
+      if(res.status==='error')icon='❗';
+      box.innerHTML='<div class="r-icon">'+icon+'</div>'+
+        (res.name?'<div class="r-name">'+res.name+'</div>':'')+
+        (type&&res.status!=='unknown'&&res.status!=='error'?'<div class="r-type">'+type+'</div>':'')+
+        (res.org?'<div class="r-org">'+res.org+'</div>':'')+
+        '<div class="r-msg">'+(res.message||'')+'</div>';
+      beep(res.status==='ok');
+      if(res.status==='ok') refreshStats();
+    }
+
+    function beep(ok){
+      try{const c=new(window.AudioContext||window.webkitAudioContext)();
+        const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);
+        o.frequency.value=ok?880:300;g.gain.value=0.15;o.start();o.stop(c.currentTime+0.15);
+      }catch(e){}
+    }
+
+    function onScan(text){
+      const type = document.getElementById('checkType').value;
+      const key = text + '|' + type;
+      const now=Date.now();
+      if(key===lastKey&&(now-lastTime)<3000)return;
+      if(busy)return;
+      lastKey=key;lastTime=now;busy=true;
+      const booth=document.getElementById('booth').value;
+
+      fetch(GAS_URL, {
+        method:'POST',
+        body: JSON.stringify({ token:text, booth:booth, type:type })
+      })
+      .then(r=>r.json())
+      .then(res=>{ showResult(res, type); busy=false; })
+      .catch(err=>{ showResult({status:'error',message:'전송 실패: '+err.message}, type); busy=false; });
+    }
+
+    function refreshStats(){
+      if(!GAS_URL)return;
+      const type = document.getElementById('checkType').value || '입실';
+      document.getElementById('presentLbl').textContent = type;
+      fetch(GAS_URL + '?stats=1&type=' + encodeURIComponent(type))
+        .then(r=>r.json())
+        .then(s=>{ document.getElementById('present').textContent=s.present;
+                  document.getElementById('total').textContent=s.total; })
+        .catch(()=>{});
+    }
+
+    // ── QR 박스: 항상 정사각형으로 계산 (직사각형 깨짐 방지) ──
+    function qrboxFn(viewW, viewH){
+      const size = Math.floor(Math.min(viewW, viewH) * 0.75);
+      return { width: size, height: size };
+    }
+
+    document.getElementById('startBtn').addEventListener('click', function(){
+      const btn=this; btn.textContent='카메라 켜는 중...';
+      scanner=new Html5Qrcode('reader');
+      scanner.start({facingMode:'environment'},
+        {fps:10, qrbox:qrboxFn, aspectRatio:1.0}, onScan, function(){})
+      .then(()=>{ btn.style.display='none';
+        document.getElementById('result').innerHTML='<div class="r-msg">QR을 카메라에 비춰주세요</div>'; })
+      .catch(e=>{ btn.textContent='▶ 스캔 시작 (다시 시도)';
+        document.getElementById('result').innerHTML='<div class="r-msg">카메라 권한을 허용한 뒤<br>버튼을 다시 눌러주세요</div>'; });
+    });
+
+    buildTypes();
+  </script>
+</body>
+</html>
